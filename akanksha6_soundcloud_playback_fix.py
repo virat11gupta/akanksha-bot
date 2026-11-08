@@ -42,7 +42,7 @@ OWNER_USER_ID = int(os.getenv("OWNER_USER_ID", "0") or 0)
 AKANKSHA_BF_NAME = os.getenv("AKANKSHA_BF_NAME", "").strip()
 # Default to the specific Discord user selected by the server owner. This is a public
 # Discord user ID, not a secret; it can be changed in .env at any time.
-AKANKSHA_BF_USER_ID = int(os.getenv("AKANKSHA_BF_USER_ID", "845317706202611733") or 0)
+AKANKSHA_BF_USER_ID = int(os.getenv("AKANKSHA_BF_USER_ID", "1332613770593177611") or 0)
 DB_PATH = os.getenv("DB_PATH", "akanksha_bot.sqlite3")
 ARCADE_CATEGORY_NAME = "🎮 AKANKSHA ARCADE"
 ARCADE_CHANNELS = {
