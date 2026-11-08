@@ -36,9 +36,9 @@ log = logging.getLogger("akanksha-bot")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
-WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID", "0") or 0)
+WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID", "1561366794269229146") or 0)
 GIRLFRIEND_USER_ID = int(os.getenv("GIRLFRIEND_USER_ID", "0") or 0)
-OWNER_USER_ID = int(os.getenv("OWNER_USER_ID", "0") or 0)
+OWNER_USER_ID = int(os.getenv("OWNER_USER_ID", "1089244731013345300") or 0)
 AKANKSHA_BF_NAME = os.getenv("AKANKSHA_BF_NAME", "").strip()
 # Default to the specific Discord user selected by the server owner. This is a public
 # Discord user ID, not a secret; it can be changed in .env at any time.
