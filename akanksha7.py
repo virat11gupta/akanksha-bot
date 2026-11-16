@@ -2014,12 +2014,12 @@ async def security_log(guild: discord.Guild, text: str):
 
 @bot.command(name="help", aliases=["commands"])
 async def help_command(ctx: commands.Context):
-    """Show every registered prefix and slash command, including group subcommands."""
+    """Show a clean, readable list of registered prefix and slash commands."""
 
     def split_lines(lines, limit=950):
         chunks, current = [], ""
         for line in lines:
-            candidate = f"{current}\\n{line}" if current else line
+            candidate = f"{current}\n{line}" if current else line
             if len(candidate) > limit and current:
                 chunks.append(current)
                 current = line
@@ -2029,16 +2029,13 @@ async def help_command(ctx: commands.Context):
             chunks.append(current)
         return chunks
 
-    # Prefix commands are read directly from the live command registry so newly
-    # added commands automatically appear here.
     prefix_lines = []
     for command in sorted(bot.commands, key=lambda item: item.name):
-        aliases = f" (aliases: {', '.join(command.aliases)})" if command.aliases else ""
-        description = (command.short_doc or command.help or "No description provided").replace("\\n", " ").strip()
-        prefix_lines.append(f"`!{command.name}`{aliases} — {description[:115]}")
+        aliases = f"  • aliases: {', '.join(command.aliases)}" if command.aliases else ""
+        description = (command.short_doc or command.help or "No description available")
+        description = " ".join(description.split())
+        prefix_lines.append(f"**`!{command.name}`**{aliases}\n{description[:130]}")
 
-    # Walk slash command groups recursively, so /shop add and /kudos set are
-    # shown as full command paths rather than only showing their parent group.
     slash_lines = []
 
     def add_slash_command(command, parent=""):
@@ -2048,46 +2045,58 @@ async def help_command(ctx: commands.Context):
             for child in sorted(children, key=lambda item: item.name):
                 add_slash_command(child, path)
         else:
-            description = (getattr(command, "description", "") or "No description provided")
-            slash_lines.append(f"`/{path}` — {description[:115]}")
+            description = getattr(command, "description", "") or "No description available"
+            slash_lines.append(f"**`/{path}`**\n{' '.join(description.split())[:130]}")
 
     for command in sorted(bot.tree.get_commands(), key=lambda item: item.name):
         add_slash_command(command)
 
     embeds = []
-    prefix_chunks = split_lines(prefix_lines)
-    slash_chunks = split_lines(slash_lines)
 
+    prefix_chunks = split_lines(prefix_lines, limit=900)
     prefix_embed = discord.Embed(
-        title="🎀 Akanksha — Prefix Commands",
-        description="Use `!` before these commands. Example: `!help`",
-        color=discord.Color.dark_red(),
+        title="🎀  AKANKSHA  •  COMMAND GUIDE",
+        description=(
+            "**PREFIX COMMANDS**\n"
+            "Use the `!` prefix before a command.\n"
+            "Example: `!help`\n\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.from_rgb(116, 35, 55),
     )
     for index, chunk in enumerate(prefix_chunks, start=1):
         prefix_embed.add_field(
-            name=f"Prefix commands" if len(prefix_chunks) == 1 else f"Prefix commands ({index}/{len(prefix_chunks)})",
+            name=f"⌁ Prefix commands  ·  {index}/{len(prefix_chunks)}",
             value=chunk,
             inline=False,
         )
-    prefix_embed.set_footer(text=f"{len(prefix_lines)} registered prefix commands • Use /help for slash commands too.")
+    prefix_embed.set_footer(
+        text=f"AKANKSHA  •  {len(prefix_lines)} prefix commands  •  Use / for slash commands"
+    )
     embeds.append(prefix_embed)
 
+    slash_chunks = split_lines(slash_lines, limit=900)
     slash_embed = discord.Embed(
-        title="🌐 Akanksha — Slash Commands",
-        description="Use Discord's `/` command menu. Group commands are shown with their full paths.",
-        color=discord.Color.dark_red(),
+        title="🌐  SLASH COMMANDS",
+        description=(
+            "**Use Discord's `/` command menu.**\n"
+            "Grouped commands are displayed with their full paths.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.from_rgb(116, 35, 55),
     )
-    for index, chunk in enumerate(slash_chunks):
+    for index, chunk in enumerate(slash_chunks, start=1):
         slash_embed.add_field(
-            name=f"Slash commands" if len(slash_chunks) == 1 else f"Slash commands ({index+1}/{len(slash_chunks)})",
+            name=f"⌁ Slash commands  ·  {index}/{len(slash_chunks)}",
             value=chunk,
             inline=False,
         )
-    slash_embed.set_footer(text=f"{len(slash_lines)} registered slash commands • Some commands require specific Discord permissions.")
+    slash_embed.set_footer(
+        text=f"AKANKSHA  •  {len(slash_lines)} slash commands  •  Some commands need permissions"
+    )
     embeds.append(slash_embed)
 
     await ctx.reply(embeds=embeds, mention_author=False)
-
 
 @bot.group(name="noprefix", invoke_without_command=True)
 @manager_only()
