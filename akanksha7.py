@@ -2340,7 +2340,13 @@ class AkankshaSettingsView(discord.ui.View):
         update_settings(self.guild_id, roast_level=select.values[0])
         await self.refresh_panel(interaction)
 
-    @discord.ui.role_select(placeholder="Choose roast-access role", min_values=0, max_values=1, row=2)
+    @discord.ui.select(
+        cls=discord.ui.RoleSelect,
+        placeholder="Choose roast-access role",
+        min_values=0,
+        max_values=1,
+        row=2
+    )
     async def choose_roast_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
         role_id = select.values[0].id if select.values else 0
         if select.values and (select.values[0].is_default() or select.values[0].managed):
