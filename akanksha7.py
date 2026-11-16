@@ -2354,7 +2354,7 @@ class AkankshaSettingsView(discord.ui.View):
         update_settings(self.guild_id, roast_role_id=role_id)
         await self.refresh_panel(interaction)
 
-    @discord.ui.channel_select(
+    @discord.ui.select(cls=discord.ui.ChannelSelect,
         placeholder="Choose no-prefix chat channel (empty clears it)",
         channel_types=[discord.ChannelType.text],
         min_values=0,
@@ -2366,7 +2366,7 @@ class AkankshaSettingsView(discord.ui.View):
         update_settings(self.guild_id, chat_channel_id=channel_id)
         await self.refresh_panel(interaction)
 
-    @discord.ui.channel_select(
+    @discord.ui.select(cls=discord.ui.ChannelSelect,
         placeholder="Choose security log channel (empty clears it)",
         channel_types=[discord.ChannelType.text],
         min_values=0,
