@@ -61,8 +61,13 @@ intents.guilds = True
 intents.members = True
 intents.message_content = True
 intents.voice_states = True
+# Required to inspect moderation-related audit-log events for anti-nuke alerts.
+try:
+    intents.moderation = True
+except AttributeError:
+    pass
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 db = sqlite3.connect(DB_PATH)
 db.execute("""CREATE TABLE IF NOT EXISTS xp (
     guild_id INTEGER NOT NULL,
@@ -95,7 +100,44 @@ db.execute("""CREATE TABLE IF NOT EXISTS shop_inventory (
     PRIMARY KEY (guild_id, user_id, item_id),
     FOREIGN KEY(item_id) REFERENCES shop_items(id)
 )""")
+db.execute("""CREATE TABLE IF NOT EXISTS guild_settings (
+    guild_id INTEGER PRIMARY KEY,
+    chat_channel_id INTEGER NOT NULL DEFAULT 0,
+    log_channel_id INTEGER NOT NULL DEFAULT 0,
+    roast_enabled INTEGER NOT NULL DEFAULT 0,
+    roast_level TEXT NOT NULL DEFAULT 'savage',
+    antiflood_enabled INTEGER NOT NULL DEFAULT 1,
+    antinuke_enabled INTEGER NOT NULL DEFAULT 1
+)""")
 db.commit()
+
+
+def get_settings(guild_id: int) -> dict:
+    row = db.execute(
+        "SELECT chat_channel_id, log_channel_id, roast_enabled, roast_level, antiflood_enabled, antinuke_enabled FROM guild_settings WHERE guild_id=?",
+        (guild_id,),
+    ).fetchone()
+    if not row:
+        return {"chat_channel_id": 0, "log_channel_id": 0, "roast_enabled": 0,
+                "roast_level": "savage", "antiflood_enabled": 1, "antinuke_enabled": 1}
+    return dict(zip(("chat_channel_id", "log_channel_id", "roast_enabled", "roast_level", "antiflood_enabled", "antinuke_enabled"), row))
+
+
+def update_settings(guild_id: int, **values) -> None:
+    allowed = {"chat_channel_id", "log_channel_id", "roast_enabled", "roast_level", "antiflood_enabled", "antinuke_enabled"}
+    values = {k: v for k, v in values.items() if k in allowed}
+    if not values:
+        return
+    current = get_settings(guild_id)
+    current.update(values)
+    db.execute("""INSERT INTO guild_settings(guild_id,chat_channel_id,log_channel_id,roast_enabled,roast_level,antiflood_enabled,antinuke_enabled)
+        VALUES(?,?,?,?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET
+        chat_channel_id=excluded.chat_channel_id, log_channel_id=excluded.log_channel_id,
+        roast_enabled=excluded.roast_enabled, roast_level=excluded.roast_level,
+        antiflood_enabled=excluded.antiflood_enabled, antinuke_enabled=excluded.antinuke_enabled""",
+        (guild_id, current["chat_channel_id"], current["log_channel_id"], current["roast_enabled"],
+         current["roast_level"], current["antiflood_enabled"], current["antinuke_enabled"]))
+    db.commit()
 
 
 def get_kudos(guild_id: int, user_id: int) -> int:
@@ -507,6 +549,34 @@ async def on_message(message: discord.Message):
 
     now = asyncio.get_running_loop().time()
     key = (message.guild.id, message.author.id)
+
+    # Anti-flood: detect rapid bursts and repeated identical messages. Never punish bots/webhooks.
+    settings = get_settings(message.guild.id)
+    if settings["antiflood_enabled"] and not message.webhook_id:
+        if not hasattr(on_message, "recent_messages"):
+            on_message.recent_messages = defaultdict(deque)
+        recent = on_message.recent_messages[key]
+        content_key = re.sub(r"\s+", " ", message.content.casefold()).strip()
+        while recent and now - recent[0][0] > 8:
+            recent.popleft()
+        recent.append((now, content_key))
+        duplicates = sum(1 for _, text in recent if content_key and text == content_key)
+        if len(recent) >= 8 or duplicates >= 4:
+            try:
+                await message.delete()
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                pass
+            try:
+                if message.author.guild_permissions.moderate_members is False and message.guild.me.guild_permissions.moderate_members:
+                    await message.author.timeout(timedelta(seconds=30), reason="Akanksha anti-flood protection")
+            except (discord.Forbidden, discord.HTTPException, AttributeError):
+                pass
+            recent.clear()
+            await bot.process_commands(message)
+            return
+
+    if not hasattr(on_message, "last_ai_reply"):
+        on_message.last_ai_reply = {}
     if not hasattr(on_message, "last_xp"):
         on_message.last_xp = {}
     last = on_message.last_xp.get(key, 0)
@@ -533,13 +603,24 @@ async def on_message(message: discord.Message):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
-    if (mentioned or replying_to_bot):
+    no_prefix_chat = bool(settings["chat_channel_id"] and message.channel.id == settings["chat_channel_id"])
+    # Avoid expensive/looping requests and rate-limit AI to one reply per user every 8 seconds.
+    should_chat = mentioned or replying_to_bot or no_prefix_chat
+    if should_chat and now - on_message.last_ai_reply.get(key, 0) >= 8:
         prompt = re.sub(rf"<@!?{bot.user.id}>", "", message.content).strip() if bot.user else message.content
+        if re.search(r"\b(count|counting)\b.{0,50}\b(100|1000|10000|million|billion|thousand)\b", prompt.casefold()):
+            await message.reply("I won't flood the channel with long number sequences 😅", mention_author=False)
+            await bot.process_commands(message)
+            return
+        on_message.last_ai_reply[key] = now
         if not prompt and message.attachments:
             prompt = "The user sent an attachment. Ask what they want help with."
         prompt = prompt or "Say hello!"
         history_key = (message.guild.id, message.channel.id, message.author.id)
         history = chat_histories[history_key]
+        if settings["roast_enabled"]:
+            prompt = ("Reply in a playful roast-comedy style. Keep it light, non-hateful, "
+                      "avoid protected traits, appearance, vulnerabilities, threats, or harassment. User message: " + prompt)
         async with message.channel.typing():
             answer = await ai_reply(
                 prompt,
@@ -1745,6 +1826,211 @@ async def reset_layout(interaction: discord.Interaction):
         ephemeral=True,
     )
 
+
+
+# ── Prefix settings, AI companion, moderation and security controls ───────────
+def is_guild_manager(ctx: commands.Context) -> bool:
+    return bool(ctx.guild and (ctx.author.id == ctx.guild.owner_id or
+        (OWNER_USER_ID and ctx.author.id == OWNER_USER_ID) or ctx.author.guild_permissions.manage_guild))
+
+
+def manager_only():
+    async def predicate(ctx: commands.Context):
+        if not is_guild_manager(ctx):
+            raise commands.CheckFailure("Only the server owner, configured bot owner, or a member with Manage Server can use this setting.")
+        return True
+    return commands.check(predicate)
+
+
+async def security_log(guild: discord.Guild, text: str):
+    settings = get_settings(guild.id)
+    channel = guild.get_channel(settings["log_channel_id"]) if settings["log_channel_id"] else guild.system_channel
+    if channel:
+        try:
+            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+        except (discord.Forbidden, discord.HTTPException):
+            log.warning("Could not send security log in guild %s", guild.id)
+
+
+@bot.command(name="help", aliases=["commands"])
+async def help_command(ctx: commands.Context):
+    embed = discord.Embed(title="🎀 Akanksha — Command Centre", description="Prefix: `!`  •  Slash commands are also available", color=discord.Color.dark_red())
+    sections = {
+        "🎵 Music": "`!join`, `!play`, `!skip`, `!pause`, `!resume`, `!queue`, `!stop`, `!leave`",
+        "💬 AI Companion": "Mention Akanksha or reply to her. `!setchat #channel`, `!removechat`, `!roast on/off`, `!roastlevel mild/savage/brutal`, `!roast @member`",
+        "🛡️ Moderation": "`/kick`, `/ban`, `/timeout`, `/clear`, `/giveaway`",
+        "🔐 Security": "`!antiflood on/off`, `!antinuke on/off`, `!setlog #channel`, `!botsettings`",
+        "🌸 Community": "`/hello`, `/cute`, `/boop`, `/rank`, `/designs`, `/setup`, `/giveaway`",
+        "💎 Kudos Shop": "`/shop`, `/shop add`, `/shop edit`, `/shop remove`, `/buy`, `/inventory`, `/balance`",
+        "👑 Owner Tools": "`/kudos add`, `/kudos remove`, `/kudos set`, `/reset` (review confirmation carefully)",
+        "🎮 Games": "`/coinflip`, `/dice`, `/rps`, `/guess`, `/trivia` (non-wagering fun)",
+    }
+    for title, body in sections.items():
+        embed.add_field(name=title, value=body, inline=False)
+    embed.set_footer(text="Some features require Discord permissions and bot permissions.")
+    await ctx.reply(embed=embed, mention_author=False)
+
+
+@bot.command(name="setchat")
+@manager_only()
+async def set_chat_channel(ctx: commands.Context, channel: discord.TextChannel):
+    update_settings(ctx.guild.id, chat_channel_id=channel.id)
+    await ctx.reply(f"💬 No-prefix AI chat is now enabled in {channel.mention}.", mention_author=False)
+
+
+@bot.command(name="removechat")
+@manager_only()
+async def remove_chat_channel(ctx: commands.Context):
+    update_settings(ctx.guild.id, chat_channel_id=0)
+    await ctx.reply("No-prefix chat disabled. Mention or reply to me to chat.", mention_author=False)
+
+
+@bot.command(name="roast")
+async def roast_command(ctx: commands.Context, mode_or_member: str = None, member: discord.Member = None):
+    settings = get_settings(ctx.guild.id)
+    if mode_or_member and mode_or_member.lower() in ("on", "off"):
+        if not is_guild_manager(ctx):
+            await ctx.reply("Only server managers can change Roast Mode.", mention_author=False)
+            return
+        update_settings(ctx.guild.id, roast_enabled=1 if mode_or_member.lower() == "on" else 0)
+        await ctx.reply(f"Roast Mode **{mode_or_member.lower()}**. Keep it playful—no hate or personal attacks.", mention_author=False)
+        return
+    target = member
+    if mode_or_member and target is None:
+        target = ctx.message.mentions[0] if ctx.message.mentions else None
+    if not settings["roast_enabled"]:
+        await ctx.reply("Roast Mode is off. A server manager can enable it with `!roast on`.", mention_author=False)
+        return
+    if target is None:
+        await ctx.reply("Usage: `!roast @member`", mention_author=False)
+        return
+    if target.bot or target.id == ctx.author.id:
+        await ctx.reply("Pick another human member for a friendly roast 😭", mention_author=False)
+        return
+    level = settings["roast_level"]
+    lines = {
+        "mild": ["Your loading screen has a loading screen.", "You bring tutorial-level chaos to a final-boss situation."],
+        "savage": ["Your comebacks arrive by postal service.", "Even your autocorrect has given up trying to help."],
+        "brutal": ["Your plans have more plot holes than a speedrun with no map.", "You have the confidence of a Wi-Fi signal with one bar."]
+    }
+    await ctx.reply(f"🔥 {target.mention}, {random.choice(lines.get(level, lines['savage']))}", mention_author=False, allowed_mentions=discord.AllowedMentions(users=[target]))
+
+
+@bot.command(name="roastlevel")
+@manager_only()
+async def roast_level_command(ctx: commands.Context, level: str):
+    level = level.lower()
+    if level not in ("mild", "savage", "brutal"):
+        await ctx.reply("Choose: `mild`, `savage`, or `brutal`.", mention_author=False)
+        return
+    update_settings(ctx.guild.id, roast_level=level)
+    await ctx.reply(f"Roast level set to **{level}**.", mention_author=False)
+
+
+@bot.command(name="antiflood")
+@manager_only()
+async def antiflood_command(ctx: commands.Context, mode: str):
+    if mode.lower() not in ("on", "off"):
+        await ctx.reply("Usage: `!antiflood on` or `!antiflood off`", mention_author=False); return
+    update_settings(ctx.guild.id, antiflood_enabled=int(mode.lower() == "on"))
+    await ctx.reply(f"Anti-flood protection **{mode.lower()}**.", mention_author=False)
+
+
+@bot.command(name="antinuke")
+@manager_only()
+async def antinuke_command(ctx: commands.Context, mode: str):
+    if mode.lower() not in ("on", "off"):
+        await ctx.reply("Usage: `!antinuke on` or `!antinuke off`", mention_author=False); return
+    update_settings(ctx.guild.id, antinuke_enabled=int(mode.lower() == "on"))
+    await ctx.reply(f"Anti-nuke monitoring **{mode.lower()}**. It alerts trusted staff; it does not automatically ban or strip roles.", mention_author=False)
+
+
+@bot.command(name="setlog")
+@manager_only()
+async def set_log_channel(ctx: commands.Context, channel: discord.TextChannel):
+    update_settings(ctx.guild.id, log_channel_id=channel.id)
+    await ctx.reply(f"🔐 Security alerts will be sent to {channel.mention}.", mention_author=False)
+
+
+@bot.command(name="botsettings")
+@manager_only()
+async def bot_settings_command(ctx: commands.Context):
+    st = get_settings(ctx.guild.id)
+    chat = f"<#{st['chat_channel_id']}>" if st['chat_channel_id'] else "Disabled"
+    logs = f"<#{st['log_channel_id']}>" if st['log_channel_id'] else "System channel / none"
+    await ctx.reply(
+        f"**Akanksha settings**\nPrefix: `!`\nNo-prefix chat: {chat}\nRoast Mode: {'On' if st['roast_enabled'] else 'Off'} ({st['roast_level']})\n"
+        f"Anti-flood: {'On' if st['antiflood_enabled'] else 'Off'}\nAnti-nuke: {'On' if st['antinuke_enabled'] else 'Off'}\nSecurity log: {logs}",
+        mention_author=False)
+
+
+# Anti-nuke monitoring: detect rapid destructive admin actions using audit logs.
+_nuke_events = defaultdict(deque)
+
+async def check_nuke_action(guild: discord.Guild, action: discord.AuditLogAction, description: str, target_id: int = 0):
+    st = get_settings(guild.id)
+    if not st["antinuke_enabled"]:
+        return
+    await asyncio.sleep(1.2)  # allow Discord's audit log to populate
+    try:
+        async for entry in guild.audit_logs(limit=5, action=action):
+            if (discord.utils.utcnow() - entry.created_at).total_seconds() > 12:
+                continue
+            if target_id and getattr(entry.target, "id", None) != target_id:
+                continue
+            executor = entry.user
+            if executor is None or executor.bot or executor.id in (guild.owner_id, OWNER_USER_ID):
+                return
+            k = (guild.id, executor.id)
+            now = asyncio.get_running_loop().time()
+            q = _nuke_events[k]
+            while q and now - q[0] > 15:
+                q.popleft()
+            q.append(now)
+            if len(q) >= 3:
+                await security_log(guild, f"🚨 **ANTI-NUKE ALERT** — {executor.mention} performed {len(q)} suspicious server changes in 15 seconds. Latest event: **{description}**. Please review the audit log immediately.")
+                q.clear()
+            else:
+                await security_log(guild, f"⚠️ Anti-nuke activity detected: **{description}** by {executor}.")
+            return
+    except (discord.Forbidden, discord.HTTPException):
+        log.warning("Cannot read audit log for anti-nuke in guild %s", guild.id)
+
+
+@bot.event
+async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
+    await check_nuke_action(channel.guild, discord.AuditLogAction.channel_delete, f"channel deleted: {channel.name}", channel.id)
+
+
+@bot.event
+async def on_guild_channel_create(channel: discord.abc.GuildChannel):
+    await check_nuke_action(channel.guild, discord.AuditLogAction.channel_create, f"channel created: {channel.name}", channel.id)
+
+
+@bot.event
+async def on_guild_role_delete(role: discord.Role):
+    await check_nuke_action(role.guild, discord.AuditLogAction.role_delete, f"role deleted: {role.name}", role.id)
+
+
+@bot.event
+async def on_guild_role_create(role: discord.Role):
+    await check_nuke_action(role.guild, discord.AuditLogAction.role_create, f"role created: {role.name}", role.id)
+
+
+@bot.event
+async def on_member_ban(guild: discord.Guild, user: discord.User):
+    await check_nuke_action(guild, discord.AuditLogAction.ban, f"member banned: {user}", user.id)
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    # Audit log distinguishes a kick from a voluntary leave.
+    await check_nuke_action(member.guild, discord.AuditLogAction.kick, f"member removed: {member}", member.id)
+
+
+@bot.event
+async def on_webhooks_update(channel: discord.abc.GuildChannel):
+    await check_nuke_action(channel.guild, discord.AuditLogAction.webhook_create, f"webhooks changed in #{channel.name}")
 
 
 if __name__ == "__main__":
