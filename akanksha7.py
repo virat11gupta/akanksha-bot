@@ -37,9 +37,9 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
 WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID", "1561366794269229146") or 0)
-GIRLFRIEND_USER_ID = int(os.getenv("GIRLFRIEND_USER_ID", "1332613770593177611") or 0)
+GIRLFRIEND_USER_ID = int(os.getenv("GIRLFRIEND_USER_ID", "0") or 0)
 OWNER_USER_ID = int(os.getenv("OWNER_USER_ID", "1089244731013345300") or 0)
-AKANKSHA_BF_NAME = os.getenv("AKANKSHA_BF_NAME", "Kartavya").strip()
+AKANKSHA_BF_NAME = os.getenv("AKANKSHA_BF_NAME", "").strip()
 # Default to the specific Discord user selected by the server owner. This is a public
 # Discord user ID, not a secret; it can be changed in .env at any time.
 AKANKSHA_BF_USER_ID = int(os.getenv("AKANKSHA_BF_USER_ID", "1332613770593177611") or 0)
@@ -67,7 +67,7 @@ try:
 except AttributeError:
     pass
 
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix="$", intents=intents, help_command=None)
 
 
 @bot.check
@@ -86,7 +86,7 @@ async def configured_channel_command_check(ctx: commands.Context):
         return True
     await ctx.reply(
         "Akanksha commands are limited to: " + ", ".join(f"<#{cid}>" for cid in allowed[:15]) +
-        ". Use `!setup clear` to allow every channel again.",
+        ". Use `$setup clear` to allow every channel again.",
         mention_author=False,
         allowed_mentions=discord.AllowedMentions.none(),
     )
@@ -409,7 +409,7 @@ async def ai_reply(
 
     if not GROQ_API_KEY:
         return (
-            "Hewwo! 🎀 My AI connection isn't configured yet. Add GROQ_API_KEY "
+            "Hewwo$ 🎀 My AI connection isn't configured yet. Add GROQ_API_KEY "
             "to your private `.env` file, then restart me. 🌸"
         )
 
@@ -513,7 +513,7 @@ async def ai_reply(
     except Exception as exc:
         log.exception("Groq request failed: %s", exc)
         return (
-            "Eep! I couldn't reach my chat service just now. Please check the "
+            "Eep$ I couldn't reach my chat service just now. Please check the "
             "PowerShell window for the specific error, then try again. 🌸"
         )
 
@@ -643,7 +643,7 @@ async def on_member_join(member: discord.Member):
                 break
     if channel:
         embed = discord.Embed(
-            title="🌸 A new cutie has arrived!",
+            title="🌸 A new cutie has arrived$",
             description=f"Welcome to **{member.guild.name}**, {member.mention}! 🎀\n"
                         "Make yourself comfy and have fun, nya~ ✨",
             color=discord.Color.from_rgb(255, 166, 210),
@@ -723,7 +723,7 @@ async def on_message(message: discord.Message):
     # When Roast Mode is ON, reply to ordinary messages from every member in
     # allowed channels, even when they do not mention Akanksha or use a prefix.
     # Prefix commands are excluded so commands do not trigger an extra AI reply.
-    roast_all_messages = bool(settings["roast_enabled"]) and not message.content.startswith("!")
+    roast_all_messages = bool(settings["roast_enabled"]) and not message.content.startswith("$")
     should_chat = channel_allowed and (
         roast_all_messages or mentioned or replying_to_bot or no_prefix_chat or member_no_prefix
     )
@@ -736,7 +736,7 @@ async def on_message(message: discord.Message):
         on_message.last_ai_reply[key] = now
         if not prompt and message.attachments:
             prompt = "The user sent an attachment. Ask what they want help with."
-        prompt = prompt or "Say hello!"
+        prompt = prompt or "Say hello$"
         history_key = (message.guild.id, message.channel.id, message.author.id)
         history = chat_histories[history_key]
         roast_system_override = None
@@ -921,7 +921,7 @@ async def shop_inventory(interaction: discord.Interaction):
         (interaction.guild_id, interaction.user.id),
     ).fetchall()
     if not rows:
-        return await interaction.response.send_message("Your inventory is empty. Browse `/shop` for rewards!", ephemeral=False)
+        return await interaction.response.send_message("Your inventory is empty. Browse `/shop` for rewards$", ephemeral=False)
     lines = [f"{emoji or '🎁'} **{name or 'Archived reward'}** × {qty} · ID `{item_id}`" for item_id, name, emoji, qty in rows]
     await interaction.response.send_message("🎒 **Your Shop Inventory**\n" + "\n".join(lines), ephemeral=False)
 
@@ -965,7 +965,7 @@ bot.tree.add_command(kudos_group)
 @app_commands.choices(choice=[app_commands.Choice(name="Heads", value="heads"), app_commands.Choice(name="Tails", value="tails")])
 async def coinflip(interaction: discord.Interaction, choice: app_commands.Choice[str]):
     result = random.choice(["heads", "tails"])
-    outcome = "You guessed correctly! 🎉" if result == choice.value else "Not this time—try again! 🌸"
+    outcome = "You guessed correctly$ 🎉" if result == choice.value else "Not this time—try again$ 🌸"
     await interaction.response.send_message(f"🪙 It landed on **{result}**. {outcome}")
 
 @bot.tree.command(name="dice", description="Roll a six-sided die 🎲")
@@ -977,14 +977,14 @@ async def dice(interaction: discord.Interaction):
 async def rps(interaction: discord.Interaction, choice: app_commands.Choice[str]):
     other = random.choice(["rock", "paper", "scissors"])
     wins = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
-    result = "It's a tie!" if choice.value == other else ("You win! 🎉" if wins[choice.value] == other else "Akanksha wins this round!")
+    result = "It's a tie$" if choice.value == other else ("You win$ 🎉" if wins[choice.value] == other else "Akanksha wins this round$")
     await interaction.response.send_message(f"You chose **{choice.value}**; Akanksha chose **{other}**. {result}")
 
 @bot.tree.command(name="guess", description="Guess a number from 1 to 10 🔢")
 @app_commands.describe(number="Your guess (1–10)")
 async def guess(interaction: discord.Interaction, number: app_commands.Range[int, 1, 10]):
     answer = random.randint(1, 10)
-    await interaction.response.send_message(f"🔢 The number was **{answer}**. {'Correct! 🎉' if number == answer else 'Not quite—try again! 🌸'}")
+    await interaction.response.send_message(f"🔢 The number was **{answer}**. {'Correct$ 🎉' if number == answer else 'Not quite—try again$ 🌸'}")
 
 @bot.tree.command(name="trivia", description="Get a quick trivia question 🧠")
 async def trivia(interaction: discord.Interaction):
@@ -998,10 +998,10 @@ async def trivia(interaction: discord.Interaction):
     view = discord.ui.View(timeout=45)
     async def pick(i: discord.Interaction):
         if i.user.id != interaction.user.id:
-            return await i.response.send_message("This quiz belongs to the person who started it!", ephemeral=True)
+            return await i.response.send_message("This quiz belongs to the person who started it$", ephemeral=True)
         for child in view.children:
             child.disabled = True
-        await i.response.edit_message(content=f"🧠 {question}\nAnswer: **{answer}**. {'Correct! 🎉' if i.data.get('custom_id') == answer else 'Good try! 🌸'}", view=view)
+        await i.response.edit_message(content=f"🧠 {question}\nAnswer: **{answer}**. {'Correct$ 🎉' if i.data.get('custom_id') == answer else 'Good try$ 🌸'}", view=view)
     for option in options:
         button = discord.ui.Button(label=option, style=discord.ButtonStyle.primary, custom_id=option)
         button.callback = pick
@@ -1017,10 +1017,10 @@ async def hello(interaction: discord.Interaction):
 @bot.tree.command(name="cute", description="Get a kawaii compliment 🎀")
 async def cute(interaction: discord.Interaction):
     compliments = [
-        "You're a little sunshine in this server! ☀️🎀",
-        "Your presence adds extra sparkle! ✨",
-        "You're doing great, don't forget that! 🌸",
-        "Certified cutie alert! 🚨💗",
+        "You're a little sunshine in this server$ ☀️🎀",
+        "Your presence adds extra sparkle$ ✨",
+        "You're doing great, don't forget that$ 🌸",
+        "Certified cutie alert$ 🚨💗",
         "You make this place a little brighter, nya~ 🌈",
     ]
     await interaction.response.send_message(random.choice(compliments))
@@ -1151,7 +1151,7 @@ async def giveaway(interaction: discord.Interaction, duration: str, prize: str, 
         return
     end_time = int(discord.utils.utcnow().timestamp() + seconds)
     embed = discord.Embed(
-        title="🎉 GIVEAWAY TIME! 🎉",
+        title="🎉 GIVEAWAY TIME$ 🎉",
         description=f"**Prize:** {prize}\n**Winners:** {winners}\nReact with 🎉 to enter!\n**Ends:** <t:{end_time}:R>",
         color=discord.Color.from_rgb(255, 166, 210),
     )
@@ -1191,7 +1191,7 @@ async def join(interaction: discord.Interaction):
         await interaction.response.send_message("Use this command inside a server, nya~ 🎵", ephemeral=False)
         return
     if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("Join a voice channel first, then use `/join`! 🎀", ephemeral=False)
+        await interaction.response.send_message("Join a voice channel first, then use `/join`$ 🎀", ephemeral=False)
         return
 
     target_channel = interaction.user.voice.channel
@@ -1251,7 +1251,7 @@ async def skip(interaction: discord.Interaction):
         await interaction.response.send_message("Nothing is playing right now. 🌸", ephemeral=False)
         return
     voice.stop()
-    await interaction.response.send_message("⏭️ Skipped! 🎶")
+    await interaction.response.send_message("⏭️ Skipped$ 🎶")
 
 
 @bot.tree.command(name="pause", description="Pause the current song")
@@ -1271,7 +1271,7 @@ async def resume(interaction: discord.Interaction):
         await interaction.response.send_message("The music isn't paused. 🌸", ephemeral=False)
         return
     voice.resume()
-    await interaction.response.send_message("▶️ Music resumed! 🎶")
+    await interaction.response.send_message("▶️ Music resumed$ 🎶")
 
 
 @bot.tree.command(name="queue", description="Show the upcoming songs")
@@ -1302,7 +1302,7 @@ async def leave(interaction: discord.Interaction):
         return
     music_queues[interaction.guild_id].clear()
     await voice.disconnect()
-    await interaction.response.send_message("Bye-bye, voice channel! 🎀")
+    await interaction.response.send_message("Bye-bye, voice channel$ 🎀")
 
 
 @bot.tree.error
@@ -1313,7 +1313,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         message = "I need more server permissions to do that."
     else:
         log.exception("Slash command error", exc_info=error)
-        message = "Oops! Something went wrong. Please try again."
+        message = "Oops$ Something went wrong. Please try again."
     try:
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=False)
@@ -2022,7 +2022,7 @@ async def help_command(ctx: commands.Context):
         "antinuke": "View or manage server anti-nuke protection.",
         "botsettings": "Open the interactive bot settings panel.",
         "help": "Show this command guide.",
-        "noprefix": "Manage members allowed to chat without !.",
+        "noprefix": "Manage members allowed to chat without $.",
         "removechat": "Remove the configured AI chat channel.",
         "removelog": "Remove the configured security log channel.",
         "roast": "Toggle server-wide Roast Mode or roast a member.",
@@ -2053,7 +2053,7 @@ async def help_command(ctx: commands.Context):
         title="🎀  AKANKSHA  |  COMMAND CENTER",
         description=(
             "A quick guide to Akanksha's commands.\n"
-            "**Prefix:** `!`  •  **Example:** `!help`\n"
+            "**Prefix:** `$`  •  **Example:** `$help`\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=discord.Color.from_rgb(112, 30, 52),
@@ -2108,9 +2108,9 @@ async def help_command(ctx: commands.Context):
 async def no_prefix_group(ctx: commands.Context):
     await ctx.reply(
         "**No-prefix access commands**\\n"
-        "`!noprefix add @user` — allow a member to chat with Akanksha without a prefix in every channel\\n"
-        "`!noprefix remove @user` — remove that access\\n"
-        "`!noprefix list` — show members with access",
+        "`$noprefix add @user` — allow a member to chat with Akanksha without a prefix in every channel\\n"
+        "`$noprefix remove @user` — remove that access\\n"
+        "`$noprefix list` — show members with access",
         mention_author=False,
     )
 
@@ -2158,7 +2158,7 @@ async def setup_channels(ctx: commands.Context):
     allowed = get_bot_allowed_channels(ctx.guild.id)
     status = ("Akanksha works in **every channel**." if not allowed else
               "Akanksha works only in: " + ", ".join(f"<#{cid}>" for cid in allowed))
-    await ctx.reply(status + "\\n\\n`!setup add #channel` — allow a channel\\n`!setup remove #channel` — block a channel\\n`!setup list` — list allowed channels\\n`!setup clear` — allow every channel again",
+    await ctx.reply(status + "\\n\\n`$setup add #channel` — allow a channel\\n`$setup remove #channel` — block a channel\\n`$setup list` — list allowed channels\\n`$setup clear` — allow every channel again",
                     mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -2225,10 +2225,10 @@ async def roast_command(ctx: commands.Context, mode_or_member: str = None, membe
     if mode_or_member and target is None:
         target = ctx.message.mentions[0] if ctx.message.mentions else None
     if not settings["roast_enabled"]:
-        await ctx.reply("Roast Mode is off. A server manager can enable it with `!roast on`.", mention_author=False)
+        await ctx.reply("Roast Mode is off. A server manager can enable it with `$roast on`.", mention_author=False)
         return
     if target is None:
-        await ctx.reply("Usage: `!roast @member`", mention_author=False)
+        await ctx.reply("Usage: `$roast @member`", mention_author=False)
         return
     if target.bot or target.id == ctx.author.id:
         await ctx.reply("Choose another human member to roast.", mention_author=False)
@@ -2267,7 +2267,7 @@ async def roast_command(ctx: commands.Context, mode_or_member: str = None, membe
             history=[],
             system_override=roast_system,
         )
-    roast = re.sub(r"<@!?\\d+>", "", roast).strip()
+    roast = re.sub(r"<@$?\\d+>", "", roast).strip()
     if not roast:
         roast = "That attempt was so weak it needs a second opinion."
     roast = roast[:450]
@@ -2294,7 +2294,7 @@ async def roast_level_command(ctx: commands.Context, level: str):
 @manager_only()
 async def antiflood_command(ctx: commands.Context, mode: str):
     if mode.lower() not in ("on", "off"):
-        await ctx.reply("Usage: `!antiflood on` or `!antiflood off`", mention_author=False); return
+        await ctx.reply("Usage: `$antiflood on` or `$antiflood off`", mention_author=False); return
     update_settings(ctx.guild.id, antiflood_enabled=int(mode.lower() == "on"))
     await ctx.reply(f"Anti-flood protection **{mode.lower()}**.", mention_author=False)
 
@@ -2303,7 +2303,7 @@ async def antiflood_command(ctx: commands.Context, mode: str):
 @manager_only()
 async def antinuke_command(ctx: commands.Context, mode: str):
     if mode.lower() not in ("on", "off"):
-        await ctx.reply("Usage: `!antinuke on` or `!antinuke off`", mention_author=False); return
+        await ctx.reply("Usage: `$antinuke on` or `$antinuke off`", mention_author=False); return
     update_settings(ctx.guild.id, antinuke_enabled=int(mode.lower() == "on"))
     await ctx.reply(f"Anti-nuke monitoring **{mode.lower()}**. It alerts trusted staff; it does not automatically ban or strip roles.", mention_author=False)
 
@@ -2324,7 +2324,7 @@ def build_bot_settings_embed(guild: discord.Guild) -> discord.Embed:
         description="Edit the server settings below. Changes are saved automatically.",
         color=discord.Color.dark_red(),
     )
-    embed.add_field(name="Prefix", value="`!` (fixed)", inline=True)
+    embed.add_field(name="Prefix", value="`$` (fixed)", inline=True)
     embed.add_field(name="No-prefix chat", value=chat, inline=True)
     embed.add_field(name="Roast Mode", value="On" if st["roast_enabled"] else "Off", inline=True)
     embed.add_field(name="Roast level", value=st["roast_level"].title(), inline=True)
