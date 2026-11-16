@@ -619,8 +619,11 @@ async def on_message(message: discord.Message):
         history_key = (message.guild.id, message.channel.id, message.author.id)
         history = chat_histories[history_key]
         if settings["roast_enabled"]:
-            prompt = ("Reply in a playful roast-comedy style. Keep it light, non-hateful, "
-                      "avoid protected traits, appearance, vulnerabilities, threats, or harassment. User message: " + prompt)
+            prompt = ("Use a blunt, sharp, unapologetically sarcastic tone. Do not make the response "
+                      "cute, wholesome, or playful. Be direct and cutting, but keep it within "
+                      "comedy: do not use slurs, threats, protected traits, appearance, health, "
+                      "family, trauma, or personal vulnerabilities, and do not encourage pile-ons. "
+                      "Respond to the actual message. User message: " + prompt)
         async with message.channel.typing():
             answer = await ai_reply(
                 prompt,
@@ -1893,7 +1896,7 @@ async def roast_command(ctx: commands.Context, mode_or_member: str = None, membe
             await ctx.reply("Only server managers can change Roast Mode.", mention_author=False)
             return
         update_settings(ctx.guild.id, roast_enabled=1 if mode_or_member.lower() == "on" else 0)
-        await ctx.reply(f"Roast Mode **{mode_or_member.lower()}**. Keep it playful—no hate or personal attacks.", mention_author=False)
+        await ctx.reply(f"Roast Mode **{mode_or_member.lower()}**. Tone: blunt and savage, without slurs, threats, or attacks on sensitive personal traits.", mention_author=False)
         return
     target = member
     if mode_or_member and target is None:
@@ -1905,15 +1908,44 @@ async def roast_command(ctx: commands.Context, mode_or_member: str = None, membe
         await ctx.reply("Usage: `!roast @member`", mention_author=False)
         return
     if target.bot or target.id == ctx.author.id:
-        await ctx.reply("Pick another human member for a friendly roast 😭", mention_author=False)
+        await ctx.reply("Choose another human member to roast.", mention_author=False)
         return
     level = settings["roast_level"]
-    lines = {
-        "mild": ["Your loading screen has a loading screen.", "You bring tutorial-level chaos to a final-boss situation."],
-        "savage": ["Your comebacks arrive by postal service.", "Even your autocorrect has given up trying to help."],
-        "brutal": ["Your plans have more plot holes than a speedrun with no map.", "You have the confidence of a Wi-Fi signal with one bar."]
-    }
-    await ctx.reply(f"🔥 {target.mention}, {random.choice(lines.get(level, lines['savage']))}", mention_author=False, allowed_mentions=discord.AllowedMentions(users=[target]))
+    # Generate each roast dynamically with the AI instead of selecting from a
+    # fixed list. Include recent outputs as exclusions to reduce repetition.
+    history_key = (ctx.guild.id, ctx.channel.id, target.id)
+    if not hasattr(roast_command, "recent_roasts"):
+        roast_command.recent_roasts = defaultdict(lambda: deque(maxlen=12))
+    recent = list(roast_command.recent_roasts[history_key])
+    roast_prompt = (
+        f"Write ONE fresh, original {level}-level harsh, blunt, cutting roast for the Discord member "
+        f"named {target.display_name!r}. Do NOT make it cute, wholesome, friendly, or playful. "
+        "Use a direct, biting, sarcastic tone; be concise and varied, and base it on harmless "
+        "gaming/chat context where possible. Make it different in wording and structure "
+        "from previous outputs. Do not use a canned line or repeat any of these recent roasts: "
+        + repr(recent)
+        + ". Do not target protected traits, appearance, disability, health, family, "
+        "trauma, vulnerabilities, or other sensitive personal matters. No slurs, threats, "
+        "sexual content, or hateful/harassing content. Output only the roast, with no "
+        "username or introductory label."
+    )
+    async with ctx.typing():
+        roast = await ai_reply(
+            roast_prompt,
+            target.display_name,
+            target.id,
+            history=[],
+        )
+    roast = re.sub(r"<@!?\\d+>", "", roast).strip()
+    if not roast:
+        roast = "That attempt was so weak it needs a second opinion."
+    roast = roast[:450]
+    roast_command.recent_roasts[history_key].append(roast)
+    await ctx.reply(
+        f"🔥 {target.mention}, {roast}",
+        mention_author=False,
+        allowed_mentions=discord.AllowedMentions(users=[target]),
+    )
 
 
 @bot.command(name="roastlevel")
