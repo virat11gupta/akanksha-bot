@@ -187,6 +187,39 @@ def bot_channel_is_allowed(guild_id: int, channel_id: int) -> bool:
     return not allowed or channel_id in allowed
 
 
+def has_no_prefix_access(guild_id: int, user_id: int) -> bool:
+    row = db.execute(
+        "SELECT 1 FROM no_prefix_users WHERE guild_id=? AND user_id=? LIMIT 1",
+        (guild_id, user_id),
+    ).fetchone()
+    return row is not None
+
+
+def add_no_prefix_access(guild_id: int, user_id: int, added_by: int = 0) -> bool:
+    cursor = db.execute(
+        "INSERT OR IGNORE INTO no_prefix_users (guild_id, user_id, added_by) VALUES (?, ?, ?)",
+        (guild_id, user_id, added_by),
+    )
+    db.commit()
+    return cursor.rowcount > 0
+
+
+def remove_no_prefix_access(guild_id: int, user_id: int) -> bool:
+    cursor = db.execute(
+        "DELETE FROM no_prefix_users WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id),
+    )
+    db.commit()
+    return cursor.rowcount > 0
+
+
+def list_no_prefix_access(guild_id: int):
+    return db.execute(
+        "SELECT user_id FROM no_prefix_users WHERE guild_id=? ORDER BY added_at, user_id",
+        (guild_id,),
+    ).fetchall()
+
+
 def get_settings(guild_id: int) -> dict:
     row = db.execute(
         "SELECT chat_channel_id, log_channel_id, roast_enabled, roast_level, roast_role_id, antiflood_enabled, antinuke_enabled FROM guild_settings WHERE guild_id=?",
