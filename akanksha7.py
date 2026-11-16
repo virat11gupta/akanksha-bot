@@ -720,8 +720,13 @@ async def on_message(message: discord.Message):
 
     no_prefix_chat = bool(settings["chat_channel_id"] and message.channel.id == settings["chat_channel_id"])
     member_no_prefix = has_no_prefix_access(message.guild.id, message.author.id)
-    # Members on the allow-list can chat without a prefix in every text channel.
-    should_chat = channel_allowed and (mentioned or replying_to_bot or no_prefix_chat or member_no_prefix)
+    # When Roast Mode is ON, reply to ordinary messages from every member in
+    # allowed channels, even when they do not mention Akanksha or use a prefix.
+    # Prefix commands are excluded so commands do not trigger an extra AI reply.
+    roast_all_messages = bool(settings["roast_enabled"]) and not message.content.startswith("!")
+    should_chat = channel_allowed and (
+        roast_all_messages or mentioned or replying_to_bot or no_prefix_chat or member_no_prefix
+    )
     if should_chat and now - on_message.last_ai_reply.get(key, 0) >= 8:
         prompt = re.sub(rf"<@!?{bot.user.id}>", "", message.content).strip() if bot.user else message.content
         if re.search(r"\b(count|counting)\b.{0,50}\b(100|1000|10000|million|billion|thousand)\b", prompt.casefold()):
@@ -735,11 +740,7 @@ async def on_message(message: discord.Message):
         history_key = (message.guild.id, message.channel.id, message.author.id)
         history = chat_histories[history_key]
         roast_system_override = None
-        roast_role_id = int(settings.get("roast_role_id", 0) or 0)
-        member_has_roast_role = bool(
-            roast_role_id and any(role.id == roast_role_id for role in message.author.roles)
-        )
-        if settings["roast_enabled"] and member_has_roast_role:
+        if settings["roast_enabled"]:
             # Roast Mode applies to every AI reply in this server, including mentions,
             # replies to Akanksha, and the configured no-prefix chat channel.
             roast_system_override = (
@@ -2024,9 +2025,8 @@ async def help_command(ctx: commands.Context):
         "noprefix": "Manage members allowed to chat without !.",
         "removechat": "Remove the configured AI chat channel.",
         "removelog": "Remove the configured security log channel.",
-        "roast": "Toggle Roast Mode or roast an eligible member.",
+        "roast": "Toggle server-wide Roast Mode or roast a member.",
         "roastlevel": "Set the Roast Mode intensity.",
-        "roastrole": "Choose which role can use Roast Mode.",
         "setchat": "Set the channel for AI conversations.",
         "setlog": "Choose where security alerts are sent.",
         "setup": "Choose which channels Akanksha can use.",
@@ -2233,13 +2233,6 @@ async def roast_command(ctx: commands.Context, mode_or_member: str = None, membe
     if target.bot or target.id == ctx.author.id:
         await ctx.reply("Choose another human member to roast.", mention_author=False)
         return
-    roast_role_id = int(settings.get("roast_role_id", 0) or 0)
-    if not roast_role_id:
-        await ctx.reply("A roast-access role has not been configured. A manager can set one with `!roastrole @role`.", mention_author=False)
-        return
-    if not any(role.id == roast_role_id for role in target.roles):
-        await ctx.reply("That member doesn't have the configured roast-access role.", mention_author=False)
-        return
     level = settings["roast_level"]
     # Generate each roast dynamically with the AI instead of selecting from a
     # fixed list. Include recent outputs as exclusions to reduce repetition.
@@ -2286,31 +2279,6 @@ async def roast_command(ctx: commands.Context, mode_or_member: str = None, membe
     )
 
 
-@bot.command(name="roastrole")
-@owner_or_bot_owner_only()
-async def roast_role_command(ctx: commands.Context, role_or_off: str = None):
-    """Set the role whose members receive Roast Mode replies, or clear it with 'off'."""
-    if role_or_off and role_or_off.casefold() == "off":
-        update_settings(ctx.guild.id, roast_role_id=0)
-        await ctx.reply("Role-gated roasting disabled. Roast Mode will not use the savage voice for ordinary chat.", mention_author=False)
-        return
-
-    role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
-    if role is None:
-        await ctx.reply("Usage: `!roastrole @role` or `!roastrole off`.", mention_author=False)
-        return
-    if role.is_default() or role.managed:
-        await ctx.reply("Choose a normal server role, not @everyone or a managed integration role.", mention_author=False)
-        return
-
-    update_settings(ctx.guild.id, roast_role_id=role.id)
-    await ctx.reply(
-        f"Roast access role set to {role.mention}. Only members with this role will receive the savage AI tone when they tag or reply to Akanksha, or chat in the no-prefix channel.",
-        mention_author=False,
-        allowed_mentions=discord.AllowedMentions.none(),
-    )
-
-
 @bot.command(name="roastlevel")
 @owner_or_bot_owner_only()
 async def roast_level_command(ctx: commands.Context, level: str):
@@ -2351,7 +2319,6 @@ def build_bot_settings_embed(guild: discord.Guild) -> discord.Embed:
     st = get_settings(guild.id)
     chat = f"<#{st['chat_channel_id']}>" if st["chat_channel_id"] else "Disabled"
     logs = f"<#{st['log_channel_id']}>" if st["log_channel_id"] else "Not configured"
-    role = f"<@&{st['roast_role_id']}>" if st["roast_role_id"] else "Not configured"
     embed = discord.Embed(
         title="⚙️ Akanksha — Bot Settings",
         description="Edit the server settings below. Changes are saved automatically.",
@@ -2360,7 +2327,6 @@ def build_bot_settings_embed(guild: discord.Guild) -> discord.Embed:
     embed.add_field(name="Prefix", value="`!` (fixed)", inline=True)
     embed.add_field(name="No-prefix chat", value=chat, inline=True)
     embed.add_field(name="Roast Mode", value="On" if st["roast_enabled"] else "Off", inline=True)
-    embed.add_field(name="Roast access role", value=role, inline=True)
     embed.add_field(name="Roast level", value=st["roast_level"].title(), inline=True)
     embed.add_field(name="Anti-flood", value="On" if st["antiflood_enabled"] else "Off", inline=True)
     embed.add_field(name="Anti-nuke", value="On" if st["antinuke_enabled"] else "Off", inline=True)
@@ -2420,20 +2386,6 @@ class AkankshaSettingsView(discord.ui.View):
     )
     async def choose_roast_level(self, interaction: discord.Interaction, select: discord.ui.Select):
         update_settings(self.guild_id, roast_level=select.values[0])
-        await self.refresh_panel(interaction)
-
-    @discord.ui.select(
-        cls=discord.ui.RoleSelect,
-        placeholder="Choose roast-access role",
-        min_values=0,
-        max_values=1,
-        row=2
-    )
-    async def choose_roast_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
-        role_id = select.values[0].id if select.values else 0
-        if select.values and (select.values[0].is_default() or select.values[0].managed):
-            return await interaction.response.send_message("Choose a normal server role.", ephemeral=True)
-        update_settings(self.guild_id, roast_role_id=role_id)
         await self.refresh_panel(interaction)
 
     @discord.ui.select(cls=discord.ui.ChannelSelect,
