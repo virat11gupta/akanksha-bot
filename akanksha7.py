@@ -2014,89 +2014,94 @@ async def security_log(guild: discord.Guild, text: str):
 
 @bot.command(name="help", aliases=["commands"])
 async def help_command(ctx: commands.Context):
-    """Show a clean, readable list of registered prefix and slash commands."""
+    """Show Akanksha commands in a compact, easy-to-scan grid."""
 
-    def split_lines(lines, limit=950):
-        chunks, current = [], ""
-        for line in lines:
-            candidate = f"{current}\n{line}" if current else line
-            if len(candidate) > limit and current:
-                chunks.append(current)
-                current = line
-            else:
-                current = candidate
-        if current:
-            chunks.append(current)
-        return chunks
+    prefix_descriptions = {
+        "antiflood": "View or manage anti-flood protection.",
+        "antinuke": "View or manage server anti-nuke protection.",
+        "botsettings": "Open the interactive bot settings panel.",
+        "help": "Show this command guide.",
+        "noprefix": "Manage members allowed to chat without !.",
+        "removechat": "Remove the configured AI chat channel.",
+        "removelog": "Remove the configured security log channel.",
+        "roast": "Toggle Roast Mode or roast an eligible member.",
+        "roastlevel": "Set the Roast Mode intensity.",
+        "roastrole": "Choose which role can use Roast Mode.",
+        "setchat": "Set the channel for AI conversations.",
+        "setlog": "Choose where security alerts are sent.",
+        "setup": "Choose which channels Akanksha can use.",
+    }
 
-    prefix_lines = []
-    for command in sorted(bot.commands, key=lambda item: item.name):
-        aliases = f"  • aliases: {', '.join(command.aliases)}" if command.aliases else ""
-        description = (command.short_doc or command.help or "No description available")
-        description = " ".join(description.split())
-        prefix_lines.append(f"**`!{command.name}`**{aliases}\n{description[:130]}")
+    prefix_commands = sorted(bot.commands, key=lambda item: item.name)
+    slash_commands = []
 
-    slash_lines = []
-
-    def add_slash_command(command, parent=""):
+    def collect_slash(command, parent=""):
         path = f"{parent} {command.name}".strip()
         children = getattr(command, "commands", None)
         if children:
             for child in sorted(children, key=lambda item: item.name):
-                add_slash_command(child, path)
+                collect_slash(child, path)
         else:
-            description = getattr(command, "description", "") or "No description available"
-            slash_lines.append(f"**`/{path}`**\n{' '.join(description.split())[:130]}")
+            description = getattr(command, "description", "") or "Discord slash command."
+            slash_commands.append((f"/{path}", " ".join(description.split())[:95]))
 
     for command in sorted(bot.tree.get_commands(), key=lambda item: item.name):
-        add_slash_command(command)
+        collect_slash(command)
 
     embeds = []
-
-    prefix_chunks = split_lines(prefix_lines, limit=900)
     prefix_embed = discord.Embed(
-        title="🎀  AKANKSHA  •  COMMAND GUIDE",
+        title="🎀  AKANKSHA  |  COMMAND CENTER",
         description=(
-            "**PREFIX COMMANDS**\n"
-            "Use the `!` prefix before a command.\n"
-            "Example: `!help`\n\n"
-            "━━━━━━━━━━━━━━━━━━━━"
+            "A quick guide to Akanksha's commands.\n"
+            "**Prefix:** `!`  •  **Example:** `!help`\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
-        color=discord.Color.from_rgb(116, 35, 55),
+        color=discord.Color.from_rgb(112, 30, 52),
     )
-    for index, chunk in enumerate(prefix_chunks, start=1):
+    prefix_embed.set_author(name="AKANKSHA • BOT GUIDE")
+    for command in prefix_commands[:25]:
+        description = prefix_descriptions.get(
+            command.name,
+            " ".join((command.short_doc or command.help or "Bot command.").split())[:95],
+        )
+        aliases = f"\nAliases: `{', '.join(command.aliases)}`" if command.aliases else ""
         prefix_embed.add_field(
-            name=f"⌁ Prefix commands  ·  {index}/{len(prefix_chunks)}",
-            value=chunk,
-            inline=False,
+            name=f"!{command.name}",
+            value=f"{description}{aliases}",
+            inline=True,
         )
     prefix_embed.set_footer(
-        text=f"AKANKSHA  •  {len(prefix_lines)} prefix commands  •  Use / for slash commands"
+        text=f"{len(prefix_commands)} prefix commands  •  Use / for slash commands"
     )
     embeds.append(prefix_embed)
 
-    slash_chunks = split_lines(slash_lines, limit=900)
-    slash_embed = discord.Embed(
-        title="🌐  SLASH COMMANDS",
-        description=(
-            "**Use Discord's `/` command menu.**\n"
-            "Grouped commands are displayed with their full paths.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=discord.Color.from_rgb(116, 35, 55),
-    )
-    for index, chunk in enumerate(slash_chunks, start=1):
-        slash_embed.add_field(
-            name=f"⌁ Slash commands  ·  {index}/{len(slash_chunks)}",
-            value=chunk,
-            inline=False,
+    # Discord allows at most 25 fields per embed. Use 20 to keep each grid readable.
+    for page_start in range(0, len(slash_commands), 20):
+        page = slash_commands[page_start:page_start + 20]
+        page_number = page_start // 20 + 1
+        page_total = max(1, (len(slash_commands) + 19) // 20)
+        slash_embed = discord.Embed(
+            title="🌐  SLASH COMMANDS",
+            description=(
+                "Use Discord's `/` command menu.\n"
+                "Grouped commands show their complete command path.\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(112, 30, 52),
         )
-    slash_embed.set_footer(
-        text=f"AKANKSHA  •  {len(slash_lines)} slash commands  •  Some commands need permissions"
-    )
-    embeds.append(slash_embed)
+        for name, description in page:
+            slash_embed.add_field(
+                name=name,
+                value=description or "Discord slash command.",
+                inline=True,
+            )
+        slash_embed.set_footer(
+            text=f"Page {page_number}/{page_total}  •  {len(slash_commands)} slash commands"
+        )
+        embeds.append(slash_embed)
 
-    await ctx.reply(embeds=embeds, mention_author=False)
+    # Discord permits up to 10 embeds in one message.
+    await ctx.reply(embeds=embeds[:10], mention_author=False)
 
 @bot.group(name="noprefix", invoke_without_command=True)
 @manager_only()
