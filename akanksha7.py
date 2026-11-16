@@ -68,6 +68,25 @@ except AttributeError:
     pass
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+
+@bot.check
+async def configured_channel_command_check(ctx: commands.Context):
+    if not ctx.guild:
+        return True
+    if ctx.command and ctx.command.name in {"help", "commands", "setup"}:
+        return True
+    allowed = get_bot_allowed_channels(ctx.guild.id)
+    if not allowed or ctx.channel.id in allowed:
+        return True
+    await ctx.reply(
+        "Akanksha commands are limited to: " + ", ".join(f"<#{cid}>" for cid in allowed[:15]) +
+        ". Use `!setup clear` to allow every channel again.",
+        mention_author=False,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    return False
+
 db = sqlite3.connect(DB_PATH)
 db.execute("""CREATE TABLE IF NOT EXISTS xp (
     guild_id INTEGER NOT NULL,
@@ -99,6 +118,20 @@ db.execute("""CREATE TABLE IF NOT EXISTS shop_inventory (
     quantity INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, user_id, item_id),
     FOREIGN KEY(item_id) REFERENCES shop_items(id)
+)""")
+db.execute("""CREATE TABLE IF NOT EXISTS bot_allowed_channels (
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    added_by INTEGER NOT NULL DEFAULT 0,
+    added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (guild_id, channel_id)
+)""")
+db.execute("""CREATE TABLE IF NOT EXISTS no_prefix_users (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    added_by INTEGER NOT NULL DEFAULT 0,
+    added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (guild_id, user_id)
 )""")
 db.execute("""CREATE TABLE IF NOT EXISTS guild_settings (
     guild_id INTEGER PRIMARY KEY,
@@ -565,6 +598,7 @@ async def on_message(message: discord.Message):
 
     # Anti-flood: detect rapid bursts and repeated identical messages. Never punish bots/webhooks.
     settings = get_settings(message.guild.id)
+    channel_allowed = bot_channel_is_allowed(message.guild.id, message.channel.id)
     if settings["antiflood_enabled"] and not message.webhook_id:
         if not hasattr(on_message, "recent_messages"):
             on_message.recent_messages = defaultdict(deque)
@@ -617,8 +651,9 @@ async def on_message(message: discord.Message):
             pass
 
     no_prefix_chat = bool(settings["chat_channel_id"] and message.channel.id == settings["chat_channel_id"])
-    # Avoid expensive/looping requests and rate-limit AI to one reply per user every 8 seconds.
-    should_chat = mentioned or replying_to_bot or no_prefix_chat
+    member_no_prefix = has_no_prefix_access(message.guild.id, message.author.id)
+    # Members on the allow-list can chat without a prefix in every text channel.
+    should_chat = channel_allowed and (mentioned or replying_to_bot or no_prefix_chat or member_no_prefix)
     if should_chat and now - on_message.last_ai_reply.get(key, 0) >= 8:
         prompt = re.sub(rf"<@!?{bot.user.id}>", "", message.content).strip() if bot.user else message.content
         if re.search(r"\b(count|counting)\b.{0,50}\b(100|1000|10000|million|billion|thousand)\b", prompt.casefold()):
@@ -1883,6 +1918,22 @@ def manager_only():
     return commands.check(predicate)
 
 
+def is_server_owner_or_bot_owner(ctx_or_interaction) -> bool:
+    guild = getattr(ctx_or_interaction, "guild", None)
+    user = getattr(ctx_or_interaction, "author", None) or getattr(ctx_or_interaction, "user", None)
+    return bool(guild and user and (
+        user.id == guild.owner_id or (OWNER_USER_ID and user.id == OWNER_USER_ID)
+    ))
+
+
+def owner_or_bot_owner_only():
+    async def predicate(ctx: commands.Context):
+        if not is_server_owner_or_bot_owner(ctx):
+            raise commands.CheckFailure("Only this server's owner or Akanksha's configured bot owner can change this setting.")
+        return True
+    return commands.check(predicate)
+
+
 async def security_log(guild: discord.Guild, text: str):
     settings = get_settings(guild.id)
     channel = guild.get_channel(settings["log_channel_id"]) if settings["log_channel_id"] else guild.system_channel
@@ -1895,21 +1946,173 @@ async def security_log(guild: discord.Guild, text: str):
 
 @bot.command(name="help", aliases=["commands"])
 async def help_command(ctx: commands.Context):
-    embed = discord.Embed(title="🎀 Akanksha — Command Centre", description="Prefix: `!`  •  Slash commands are also available", color=discord.Color.dark_red())
-    sections = {
-        "🎵 Music": "`!join`, `!play`, `!skip`, `!pause`, `!resume`, `!queue`, `!stop`, `!leave`",
-        "💬 AI Companion": "Mention/reply to Akanksha. No-prefix chat: `!setchat #channel` / `!removechat`. Roast: `!roast on/off`, `!roastrole @role` / `!roastrole off`, `!roastlevel mild/savage/brutal`, `!roast @member` (target must have the roast role).",
-        "🛡️ Moderation": "`/kick`, `/ban`, `/timeout`, `/clear`, `/giveaway`",
-        "🔐 Security": "`!antiflood on/off`, `!antinuke on/off`, `!setlog #channel`, `!botsettings`",
-        "🌸 Community": "`/hello`, `/cute`, `/boop`, `/rank`, `/designs`, `/setup`, `/giveaway`",
-        "💎 Kudos Shop": "`/shop`, `/shop add`, `/shop edit`, `/shop remove`, `/buy`, `/inventory`, `/balance`",
-        "👑 Owner Tools": "`/kudos add`, `/kudos remove`, `/kudos set`, `/reset` (review confirmation carefully)",
-        "🎮 Games": "`/coinflip`, `/dice`, `/rps`, `/guess`, `/trivia` (non-wagering fun)",
-    }
-    for title, body in sections.items():
-        embed.add_field(name=title, value=body, inline=False)
-    embed.set_footer(text="Some features require Discord permissions and bot permissions.")
-    await ctx.reply(embed=embed, mention_author=False)
+    """Show every registered prefix and slash command, including group subcommands."""
+
+    def split_lines(lines, limit=950):
+        chunks, current = [], ""
+        for line in lines:
+            candidate = f"{current}\\n{line}" if current else line
+            if len(candidate) > limit and current:
+                chunks.append(current)
+                current = line
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        return chunks
+
+    # Prefix commands are read directly from the live command registry so newly
+    # added commands automatically appear here.
+    prefix_lines = []
+    for command in sorted(bot.commands, key=lambda item: item.name):
+        aliases = f" (aliases: {', '.join(command.aliases)})" if command.aliases else ""
+        description = (command.short_doc or command.help or "No description provided").replace("\\n", " ").strip()
+        prefix_lines.append(f"`!{command.name}`{aliases} — {description[:115]}")
+
+    # Walk slash command groups recursively, so /shop add and /kudos set are
+    # shown as full command paths rather than only showing their parent group.
+    slash_lines = []
+
+    def add_slash_command(command, parent=""):
+        path = f"{parent} {command.name}".strip()
+        children = getattr(command, "commands", None)
+        if children:
+            for child in sorted(children, key=lambda item: item.name):
+                add_slash_command(child, path)
+        else:
+            description = (getattr(command, "description", "") or "No description provided")
+            slash_lines.append(f"`/{path}` — {description[:115]}")
+
+    for command in sorted(bot.tree.get_commands(), key=lambda item: item.name):
+        add_slash_command(command)
+
+    embeds = []
+    prefix_chunks = split_lines(prefix_lines)
+    slash_chunks = split_lines(slash_lines)
+
+    prefix_embed = discord.Embed(
+        title="🎀 Akanksha — Prefix Commands",
+        description="Use `!` before these commands. Example: `!help`",
+        color=discord.Color.dark_red(),
+    )
+    for index, chunk in enumerate(prefix_chunks, start=1):
+        prefix_embed.add_field(
+            name=f"Prefix commands" if len(prefix_chunks) == 1 else f"Prefix commands ({index}/{len(prefix_chunks)})",
+            value=chunk,
+            inline=False,
+        )
+    prefix_embed.set_footer(text=f"{len(prefix_lines)} registered prefix commands • Use /help for slash commands too.")
+    embeds.append(prefix_embed)
+
+    slash_embed = discord.Embed(
+        title="🌐 Akanksha — Slash Commands",
+        description="Use Discord's `/` command menu. Group commands are shown with their full paths.",
+        color=discord.Color.dark_red(),
+    )
+    for index, chunk in enumerate(slash_chunks):
+        slash_embed.add_field(
+            name=f"Slash commands" if len(slash_chunks) == 1 else f"Slash commands ({index+1}/{len(slash_chunks)})",
+            value=chunk,
+            inline=False,
+        )
+    slash_embed.set_footer(text=f"{len(slash_lines)} registered slash commands • Some commands require specific Discord permissions.")
+    embeds.append(slash_embed)
+
+    await ctx.reply(embeds=embeds, mention_author=False)
+
+
+@bot.group(name="noprefix", invoke_without_command=True)
+@manager_only()
+async def no_prefix_group(ctx: commands.Context):
+    await ctx.reply(
+        "**No-prefix access commands**\\n"
+        "`!noprefix add @user` — allow a member to chat with Akanksha without a prefix in every channel\\n"
+        "`!noprefix remove @user` — remove that access\\n"
+        "`!noprefix list` — show members with access",
+        mention_author=False,
+    )
+
+
+@no_prefix_group.command(name="add")
+@manager_only()
+async def no_prefix_add(ctx: commands.Context, member: discord.Member):
+    added = add_no_prefix_access(ctx.guild.id, member.id, ctx.author.id)
+    if added:
+        await ctx.reply(
+            f"✅ {member.mention} can now chat with Akanksha without a prefix in every text channel.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    else:
+        await ctx.reply(f"{member.mention} already has no-prefix access.", mention_author=False,
+                        allowed_mentions=discord.AllowedMentions.none())
+
+
+@no_prefix_group.command(name="remove")
+@manager_only()
+async def no_prefix_remove(ctx: commands.Context, member: discord.Member):
+    removed = remove_no_prefix_access(ctx.guild.id, member.id)
+    message = f"Removed no-prefix access from {member.mention}." if removed else f"{member.mention} did not have no-prefix access."
+    await ctx.reply(message, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+
+@no_prefix_group.command(name="list")
+@manager_only()
+async def no_prefix_list(ctx: commands.Context):
+    rows = list_no_prefix_access(ctx.guild.id)
+    if not rows:
+        await ctx.reply("No members currently have all-channel no-prefix access.", mention_author=False)
+        return
+    lines = [f"• <@{row[0]}> (`{row[0]}`)" for row in rows]
+    text = "\\n".join(lines)
+    # Stay under Discord's message limit.
+    await ctx.reply("**Members with all-channel no-prefix access**\\n" + text[:1800],
+                    mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.group(name="setup", invoke_without_command=True)
+@manager_only()
+async def setup_channels(ctx: commands.Context):
+    allowed = get_bot_allowed_channels(ctx.guild.id)
+    status = ("Akanksha works in **every channel**." if not allowed else
+              "Akanksha works only in: " + ", ".join(f"<#{cid}>" for cid in allowed))
+    await ctx.reply(status + "\\n\\n`!setup add #channel` — allow a channel\\n`!setup remove #channel` — block a channel\\n`!setup list` — list allowed channels\\n`!setup clear` — allow every channel again",
+                    mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+
+@setup_channels.command(name="add")
+@manager_only()
+async def setup_channel_add(ctx: commands.Context, channel: discord.TextChannel):
+    add_bot_allowed_channel(ctx.guild.id, channel.id, ctx.author.id)
+    await ctx.reply(f"{channel.mention} added to Akanksha's allowed channels.", mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none())
+
+
+@setup_channels.command(name="remove")
+@manager_only()
+async def setup_channel_remove(ctx: commands.Context, channel: discord.TextChannel):
+    remove_bot_allowed_channel(ctx.guild.id, channel.id)
+    allowed = get_bot_allowed_channels(ctx.guild.id)
+    result = (f"{channel.mention} removed. No restrictions remain, so Akanksha works everywhere."
+              if not allowed else f"{channel.mention} removed from the allowed channels.")
+    await ctx.reply(result, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+
+@setup_channels.command(name="list")
+@manager_only()
+async def setup_channel_list(ctx: commands.Context):
+    allowed = get_bot_allowed_channels(ctx.guild.id)
+    result = ("No channel restrictions are set. Akanksha works in every channel." if not allowed
+              else "**Akanksha enabled channels:**\\n" + "\\n".join(f"• <#{cid}>" for cid in allowed))
+    await ctx.reply(result, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+
+@setup_channels.command(name="clear")
+@manager_only()
+async def setup_channel_clear(ctx: commands.Context):
+    db.execute("DELETE FROM bot_allowed_channels WHERE guild_id=?", (ctx.guild.id,))
+    db.commit()
+    await ctx.reply("Channel restrictions cleared. Akanksha now works in every channel.", mention_author=False)
 
 
 @bot.command(name="setchat")
@@ -1930,8 +2133,8 @@ async def remove_chat_channel(ctx: commands.Context):
 async def roast_command(ctx: commands.Context, mode_or_member: str = None, member: discord.Member = None):
     settings = get_settings(ctx.guild.id)
     if mode_or_member and mode_or_member.lower() in ("on", "off"):
-        if not is_guild_manager(ctx):
-            await ctx.reply("Only server managers can change Roast Mode.", mention_author=False)
+        if not is_server_owner_or_bot_owner(ctx):
+            await ctx.reply("Only the server owner or Akanksha's configured bot owner can change Roast Mode.", mention_author=False)
             return
         update_settings(ctx.guild.id, roast_enabled=1 if mode_or_member.lower() == "on" else 0)
         await ctx.reply("Settings updated.", mention_author=False)
@@ -2002,7 +2205,7 @@ async def roast_command(ctx: commands.Context, mode_or_member: str = None, membe
 
 
 @bot.command(name="roastrole")
-@manager_only()
+@owner_or_bot_owner_only()
 async def roast_role_command(ctx: commands.Context, role_or_off: str = None):
     """Set the role whose members receive Roast Mode replies, or clear it with 'off'."""
     if role_or_off and role_or_off.casefold() == "off":
@@ -2027,7 +2230,7 @@ async def roast_role_command(ctx: commands.Context, role_or_off: str = None):
 
 
 @bot.command(name="roastlevel")
-@manager_only()
+@owner_or_bot_owner_only()
 async def roast_level_command(ctx: commands.Context, level: str):
     level = level.lower()
     if level not in ("mild", "savage", "brutal"):
@@ -2062,16 +2265,131 @@ async def set_log_channel(ctx: commands.Context, channel: discord.TextChannel):
     await ctx.reply(f"🔐 Security alerts will be sent to {channel.mention}.", mention_author=False)
 
 
-@bot.command(name="botsettings")
-@manager_only()
+def build_bot_settings_embed(guild: discord.Guild) -> discord.Embed:
+    st = get_settings(guild.id)
+    chat = f"<#{st['chat_channel_id']}>" if st["chat_channel_id"] else "Disabled"
+    logs = f"<#{st['log_channel_id']}>" if st["log_channel_id"] else "Not configured"
+    role = f"<@&{st['roast_role_id']}>" if st["roast_role_id"] else "Not configured"
+    embed = discord.Embed(
+        title="⚙️ Akanksha — Bot Settings",
+        description="Edit the server settings below. Changes are saved automatically.",
+        color=discord.Color.dark_red(),
+    )
+    embed.add_field(name="Prefix", value="`!` (fixed)", inline=True)
+    embed.add_field(name="No-prefix chat", value=chat, inline=True)
+    embed.add_field(name="Roast Mode", value="On" if st["roast_enabled"] else "Off", inline=True)
+    embed.add_field(name="Roast access role", value=role, inline=True)
+    embed.add_field(name="Roast level", value=st["roast_level"].title(), inline=True)
+    embed.add_field(name="Anti-flood", value="On" if st["antiflood_enabled"] else "Off", inline=True)
+    embed.add_field(name="Anti-nuke", value="On" if st["antinuke_enabled"] else "Off", inline=True)
+    embed.add_field(name="Security log", value=logs, inline=True)
+    embed.set_footer(text="Only the server owner and configured Akanksha bot owner can edit this menu.")
+    return embed
+
+
+class AkankshaSettingsView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not interaction.guild or not (
+            interaction.user.id == interaction.guild.owner_id
+            or (OWNER_USER_ID and interaction.user.id == OWNER_USER_ID)
+        ):
+            await interaction.response.send_message(
+                "Only this server's owner or Akanksha's configured bot owner can edit these settings.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def refresh_panel(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=build_bot_settings_embed(interaction.guild), view=self)
+
+    @discord.ui.button(label="Toggle Roast", emoji="🔥", style=discord.ButtonStyle.danger, row=0)
+    async def toggle_roast(self, interaction: discord.Interaction, button: discord.ui.Button):
+        st = get_settings(self.guild_id)
+        update_settings(self.guild_id, roast_enabled=0 if st["roast_enabled"] else 1)
+        await self.refresh_panel(interaction)
+
+    @discord.ui.button(label="Toggle Anti-flood", emoji="🚫", style=discord.ButtonStyle.secondary, row=0)
+    async def toggle_antiflood(self, interaction: discord.Interaction, button: discord.ui.Button):
+        st = get_settings(self.guild_id)
+        update_settings(self.guild_id, antiflood_enabled=0 if st["antiflood_enabled"] else 1)
+        await self.refresh_panel(interaction)
+
+    @discord.ui.button(label="Toggle Anti-nuke", emoji="🛡️", style=discord.ButtonStyle.secondary, row=0)
+    async def toggle_antinuke(self, interaction: discord.Interaction, button: discord.ui.Button):
+        st = get_settings(self.guild_id)
+        update_settings(self.guild_id, antinuke_enabled=0 if st["antinuke_enabled"] else 1)
+        await self.refresh_panel(interaction)
+
+    @discord.ui.select(
+        placeholder="Choose roast level",
+        min_values=1,
+        max_values=1,
+        options=[
+            discord.SelectOption(label="Mild", value="mild"),
+            discord.SelectOption(label="Savage", value="savage"),
+            discord.SelectOption(label="Brutal", value="brutal"),
+        ],
+        row=1,
+    )
+    async def choose_roast_level(self, interaction: discord.Interaction, select: discord.ui.Select):
+        update_settings(self.guild_id, roast_level=select.values[0])
+        await self.refresh_panel(interaction)
+
+    @discord.ui.role_select(placeholder="Choose roast-access role", min_values=0, max_values=1, row=2)
+    async def choose_roast_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
+        role_id = select.values[0].id if select.values else 0
+        if select.values and (select.values[0].is_default() or select.values[0].managed):
+            return await interaction.response.send_message("Choose a normal server role.", ephemeral=True)
+        update_settings(self.guild_id, roast_role_id=role_id)
+        await self.refresh_panel(interaction)
+
+    @discord.ui.channel_select(
+        placeholder="Choose no-prefix chat channel (empty clears it)",
+        channel_types=[discord.ChannelType.text],
+        min_values=0,
+        max_values=1,
+        row=3,
+    )
+    async def choose_chat_channel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        channel_id = select.values[0].id if select.values else 0
+        update_settings(self.guild_id, chat_channel_id=channel_id)
+        await self.refresh_panel(interaction)
+
+    @discord.ui.channel_select(
+        placeholder="Choose security log channel (empty clears it)",
+        channel_types=[discord.ChannelType.text],
+        min_values=0,
+        max_values=1,
+        row=4,
+    )
+    async def choose_log_channel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        channel_id = select.values[0].id if select.values else 0
+        update_settings(self.guild_id, log_channel_id=channel_id)
+        await self.refresh_panel(interaction)
+
+
+@bot.command(name="botsettings", aliases=["settings"])
 async def bot_settings_command(ctx: commands.Context):
-    st = get_settings(ctx.guild.id)
-    chat = f"<#{st['chat_channel_id']}>" if st['chat_channel_id'] else "Disabled"
-    logs = f"<#{st['log_channel_id']}>" if st['log_channel_id'] else "System channel / none"
+    if not is_server_owner_or_bot_owner(ctx):
+        await ctx.reply("Only this server's owner or Akanksha's configured bot owner can open the settings menu.", mention_author=False)
+        return
     await ctx.reply(
-        f"**Akanksha settings**\nPrefix: `!`\nNo-prefix chat: {chat}\nRoast Mode: {'On' if st['roast_enabled'] else 'Off'} ({st['roast_level']})\n"
-        f"Anti-flood: {'On' if st['antiflood_enabled'] else 'Off'}\nAnti-nuke: {'On' if st['antinuke_enabled'] else 'Off'}\nSecurity log: {logs}",
-        mention_author=False)
+        embed=build_bot_settings_embed(ctx.guild),
+        view=AkankshaSettingsView(ctx.guild.id),
+        mention_author=False,
+    )
+
+
+@bot.command(name="removelog")
+@owner_or_bot_owner_only()
+async def remove_log_channel(ctx: commands.Context):
+    update_settings(ctx.guild.id, log_channel_id=0)
+    await ctx.reply("Security log channel cleared.", mention_author=False)
 
 
 # Anti-nuke monitoring: detect rapid destructive admin actions using audit logs.
