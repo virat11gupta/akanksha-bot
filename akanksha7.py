@@ -74,8 +74,13 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 async def configured_channel_command_check(ctx: commands.Context):
     if not ctx.guild:
         return True
-    if ctx.command and ctx.command.name in {"help", "commands", "setup"}:
-        return True
+    # Keep the complete setup command group usable from any channel,
+    # including !setup add/remove/list/clear when a channel restriction is active.
+    command = ctx.command
+    while command is not None:
+        if command.name in {"help", "commands", "setup"}:
+            return True
+        command = command.parent
     allowed = get_bot_allowed_channels(ctx.guild.id)
     if not allowed or ctx.channel.id in allowed:
         return True
@@ -150,6 +155,36 @@ except sqlite3.OperationalError as exc:
     if "duplicate column name" not in str(exc).lower():
         raise
 db.commit()
+
+
+def get_bot_allowed_channels(guild_id: int) -> list[int]:
+    rows = db.execute(
+        "SELECT channel_id FROM bot_allowed_channels WHERE guild_id=? ORDER BY added_at, channel_id",
+        (guild_id,),
+    ).fetchall()
+    return [int(row[0]) for row in rows]
+
+
+def add_bot_allowed_channel(guild_id: int, channel_id: int, added_by: int = 0) -> None:
+    db.execute(
+        "INSERT OR IGNORE INTO bot_allowed_channels (guild_id, channel_id, added_by) VALUES (?, ?, ?)",
+        (guild_id, channel_id, added_by),
+    )
+    db.commit()
+
+
+def remove_bot_allowed_channel(guild_id: int, channel_id: int) -> None:
+    db.execute(
+        "DELETE FROM bot_allowed_channels WHERE guild_id=? AND channel_id=?",
+        (guild_id, channel_id),
+    )
+    db.commit()
+
+
+def bot_channel_is_allowed(guild_id: int, channel_id: int) -> bool:
+    allowed = get_bot_allowed_channels(guild_id)
+    # An empty allowlist means the bot is enabled in every channel.
+    return not allowed or channel_id in allowed
 
 
 def get_settings(guild_id: int) -> dict:
